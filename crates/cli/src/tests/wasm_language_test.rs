@@ -128,6 +128,22 @@ fn test_load_fixture_language_wasm() {
 }
 
 #[test]
+fn test_wasm_store_limits_api() {
+    allocations::record(|| {
+        let mut store = WasmStore::new(&ENGINE).unwrap();
+        store.set_epoch_deadline(u64::MAX / 2);
+        store.limit_memory(64 * 1024 * 1024);
+
+        let mut parser = Parser::new();
+        let language = get_test_fixture_language_wasm("epsilon_external_tokens");
+        parser.set_wasm_store(store).unwrap();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse("hello", None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), "(document (zero_width))");
+    });
+}
+
+#[test]
 fn test_wasm_realloc_smaller_size() {
     allocations::record(|| {
         let store = WasmStore::new(&ENGINE).unwrap();

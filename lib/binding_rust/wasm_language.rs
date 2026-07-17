@@ -84,6 +84,14 @@ impl WasmStore {
     pub fn language_count(&self) -> usize {
         unsafe { ffi::ts_wasm_store_language_count(self.0) }
     }
+
+    pub fn set_epoch_deadline(&mut self, ticks_beyond_current: u64) {
+        unsafe { ffi::ts_wasm_store_set_epoch_deadline(self.0, ticks_beyond_current) };
+    }
+
+    pub fn limit_memory(&mut self, memory_size: i64) {
+        unsafe { ffi::ts_wasm_store_set_memory_limit(self.0, memory_size) };
+    }
 }
 
 impl WasmError {

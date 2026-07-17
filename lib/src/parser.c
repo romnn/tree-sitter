@@ -2112,7 +2112,9 @@ TSTree *ts_parser_parse(
 
   if (ts_language_is_wasm(self->language)) {
     if (!self->wasm_store) return NULL;
-    ts_wasm_store_start(self->wasm_store, &self->lexer.data, self->language);
+    if (!ts_wasm_store_start(self->wasm_store, &self->lexer.data, self->language)) {
+      return NULL;
+    }
   }
 
   ts_lexer_set_input(&self->lexer, input);

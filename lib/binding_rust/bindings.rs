@@ -919,6 +919,17 @@ unsafe extern "C" {
     pub fn ts_wasm_store_delete(arg1: *mut TSWasmStore);
 }
 unsafe extern "C" {
+    #[doc = " Set the epoch deadline for the given Wasm store.\n\n The deadline is relative to the engine's current epoch. Wasmtime traps\n execution in this store after the engine has been incremented by this\n many ticks."]
+    pub fn ts_wasm_store_set_epoch_deadline(
+        arg1: *mut TSWasmStore,
+        ticks_beyond_current: u64,
+    );
+}
+unsafe extern "C" {
+    #[doc = " Set the maximum linear memory size for Wasm instances in the given store.\n\n This limit applies to future memory creation and growth in the store. Pass a\n negative value to use the default memory limit."]
+    pub fn ts_wasm_store_set_memory_limit(arg1: *mut TSWasmStore, memory_size: i64);
+}
+unsafe extern "C" {
     #[doc = " Create a language from a buffer of Wasm. The resulting language behaves\n like any other Tree-sitter language, except that in order to use it with\n a parser, that parser must have a Wasm store. Note that the language\n can be used with any Wasm store, it doesn't need to be the same store that\n was used to originally load it."]
     pub fn ts_wasm_store_load_language(
         arg1: *mut TSWasmStore,

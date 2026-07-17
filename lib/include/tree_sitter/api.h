@@ -1410,6 +1410,23 @@ TSWasmStore *ts_wasm_store_new(
 void ts_wasm_store_delete(TSWasmStore *);
 
 /**
+ * Set the epoch deadline for the given Wasm store.
+ *
+ * The deadline is relative to the engine's current epoch. Wasmtime traps
+ * execution in this store after the engine has been incremented by this
+ * many ticks.
+ */
+void ts_wasm_store_set_epoch_deadline(TSWasmStore *, uint64_t ticks_beyond_current);
+
+/**
+ * Set the maximum linear memory size for Wasm instances in the given store.
+ *
+ * This limit applies to future memory creation and growth in the store. Pass a
+ * negative value to use the default memory limit.
+ */
+void ts_wasm_store_set_memory_limit(TSWasmStore *, int64_t memory_size);
+
+/**
  * Create a language from a buffer of Wasm. The resulting language behaves
  * like any other Tree-sitter language, except that in order to use it with
  * a parser, that parser must have a Wasm store. Note that the language

@@ -662,6 +662,7 @@ TSWasmStore *ts_wasm_store_new(TSWasmEngine *engine, TSWasmError *wasm_error) {
   TSWasmStore *self = ts_calloc(1, sizeof(TSWasmStore));
   wasmtime_store_t *store = wasmtime_store_new(engine, self, NULL);
   wasmtime_context_t *context = wasmtime_store_context(store);
+  wasmtime_context_set_epoch_deadline(context, UINT64_MAX / 2);
   wasmtime_error_t *error = NULL;
   wasm_trap_t *trap = NULL;
   wasm_message_t message = WASM_EMPTY_VEC;
@@ -1059,6 +1060,15 @@ size_t ts_wasm_store_language_count(const TSWasmStore *self) {
     }
   }
   return result;
+}
+
+void ts_wasm_store_set_epoch_deadline(TSWasmStore *self, uint64_t ticks_beyond_current) {
+  wasmtime_context_t *context = wasmtime_store_context(self->store);
+  wasmtime_context_set_epoch_deadline(context, ticks_beyond_current);
+}
+
+void ts_wasm_store_set_memory_limit(TSWasmStore *self, int64_t memory_size) {
+  wasmtime_store_limiter(self->store, memory_size, -1, -1, -1, -1);
 }
 
 static uint32_t ts_wasm_store__heap_address(TSWasmStore *self) {
@@ -1719,7 +1729,7 @@ bool ts_wasm_store_add_language(
   return true;
 }
 
-void ts_wasm_store_reset_heap(TSWasmStore *self) {
+bool ts_wasm_store_reset_heap(TSWasmStore *self) {
   wasmtime_context_t *context = wasmtime_store_context(self->store);
   wasmtime_func_t *func = &self->builtin_fn_indices.reset_heap;
   wasm_trap_t *trap = NULL;
@@ -1728,8 +1738,17 @@ void ts_wasm_store_reset_heap(TSWasmStore *self) {
   };
 
   wasmtime_error_t *error = wasmtime_func_call(context, func, args, 1, NULL, 0, &trap);
-  ts_assert(!error);
-  ts_assert(!trap);
+  if (error) {
+    wasmtime_error_delete(error);
+    self->has_error = true;
+    return false;
+  }
+  if (trap) {
+    wasm_trap_delete(trap);
+    self->has_error = true;
+    return false;
+  }
+  return true;
 }
 
 bool ts_wasm_store_start(TSWasmStore *self, TSLexer *lexer, const TSLanguage *language) {
@@ -1738,8 +1757,7 @@ bool ts_wasm_store_start(TSWasmStore *self, TSLexer *lexer, const TSLanguage *la
   self->current_lexer = lexer;
   self->current_instance = array_get(&self->language_instances, instance_index);
   self->has_error = false;
-  ts_wasm_store_reset_heap(self);
-  return true;
+  return ts_wasm_store_reset_heap(self);
 }
 
 void ts_wasm_store_reset(TSWasmStore *self) {
@@ -2012,6 +2030,16 @@ void ts_wasm_language_release(const TSLanguage *self) {
 
 void ts_wasm_store_delete(TSWasmStore *self) {
   (void)self;
+}
+
+void ts_wasm_store_set_epoch_deadline(TSWasmStore *self, uint64_t ticks_beyond_current) {
+  (void)self;
+  (void)ticks_beyond_current;
+}
+
+void ts_wasm_store_set_memory_limit(TSWasmStore *self, int64_t memory_size) {
+  (void)self;
+  (void)memory_size;
 }
 
 bool ts_wasm_store_start(
