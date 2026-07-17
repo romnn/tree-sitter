@@ -1827,6 +1827,44 @@ if foo && bar || baz {}
     parser.parse(&input, Some(&tree)).unwrap();
 }
 
+/// Merging two stack versions walks predecessor chains as long as the input without using call
+/// stack for each link.
+#[test]
+fn test_parsing_merges_deep_stack_versions_on_a_small_stack() {
+    // Each comment adds one mergeable link to both stack versions.
+    const COMMENT_COUNT: u32 = 100_000;
+    // A merge that recursed per link would overflow this stack long before reaching the root.
+    const STACK_SIZE: usize = 512 * 1024;
+
+    let language = get_test_fixture_language("deep_stack_merge");
+    let mut source = String::from("x y m\n");
+    for _ in 0..COMMENT_COUNT {
+        source.push_str("# comment\n");
+    }
+    source.push_str("e\n");
+    let source_len = source.len();
+
+    let parse = thread::Builder::new()
+        .stack_size(STACK_SIZE)
+        .spawn(move || {
+            let mut parser = Parser::new();
+            parser.set_language(&language).unwrap();
+            let tree = parser.parse(&source, None).unwrap();
+            let root = tree.root_node();
+            let kind = root.kind().to_owned();
+            (kind, root.has_error(), root.child_count(), root.end_byte())
+        })
+        .unwrap();
+    let (kind, has_error, child_count, end_byte) = parse.join().unwrap();
+
+    // The merged versions produce one error-free program spanning the input, with every comment
+    // kept as an extra beside `head`.
+    assert_eq!(kind, "program");
+    assert!(!has_error);
+    assert_eq!(child_count, COMMENT_COUNT + 1);
+    assert_eq!(end_byte, source_len);
+}
+
 #[test]
 fn test_parsing_with_scanner_logging() {
     let mut parser = Parser::new();

@@ -1,0 +1,12 @@
+==========================================
+comments between ambiguous head and marker
+==========================================
+
+x y m
+# one
+# two
+e
+
+---
+
+(program (head (right)) (comment) (comment))
