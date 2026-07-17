@@ -26,6 +26,21 @@ typedef struct {
   bool is_pending;
 } StackLink;
 
+typedef enum {
+  StackNodeAddLinkEnter,
+  StackNodeAddLinkMergeChildren,
+} StackNodeAddLinkFrameState;
+
+typedef struct {
+  StackNodeAddLinkFrameState state;
+  StackNode *self_node;
+  StackLink link;
+  StackNode *merge_target;
+  unsigned next_child_index;
+} StackNodeAddLinkFrame;
+
+typedef Array(StackNodeAddLinkFrame) StackNodeAddLinkFrameArray;
+
 struct StackNode {
   TSStateId state;
   Length position;
@@ -65,6 +80,7 @@ struct Stack {
   Array(StackHead) heads;
   StackSliceArray slices;
   Array(StackIterator) iterators;
+  StackNodeAddLinkFrameArray link_merge_frames;
   StackNodeArray node_pool;
   StackNode *base_node;
   SubtreePool *subtree_pool;
@@ -198,69 +214,114 @@ static bool stack__subtree_is_equivalent(Subtree left, Subtree right) {
 }
 
 static void stack_node_add_link(
+  Stack *stack,
   StackNode *self,
-  StackLink link,
-  SubtreePool *subtree_pool
+  StackLink link
 ) {
-  if (link.node == self) return;
+  SubtreePool *subtree_pool = stack->subtree_pool;
+  StackNodeAddLinkFrameArray *frames = &stack->link_merge_frames;
+  array_clear(frames);
+  array_push(frames, ((StackNodeAddLinkFrame) {
+    .state = StackNodeAddLinkEnter,
+    .self_node = self,
+    .link = link,
+  }));
 
-  for (int i = 0; i < self->link_count; i++) {
-    StackLink *existing_link = &self->links[i];
-    if (stack__subtree_is_equivalent(existing_link->subtree, link.subtree)) {
-      // In general, we preserve ambiguities until they are removed from the stack
-      // during a pop operation where multiple paths lead to the same node. But in
-      // the special case where two links directly connect the same pair of nodes,
-      // we can safely remove the ambiguity ahead of time without changing behavior.
-      if (existing_link->node == link.node) {
-        if (
-          ts_subtree_dynamic_precedence(link.subtree) >
-          ts_subtree_dynamic_precedence(existing_link->subtree)
-        ) {
-          ts_subtree_retain(link.subtree);
-          ts_subtree_release(subtree_pool, existing_link->subtree);
-          existing_link->subtree = link.subtree;
-          self->dynamic_precedence =
-            link.node->dynamic_precedence + ts_subtree_dynamic_precedence(link.subtree);
-        }
-        return;
+  while (frames->size > 0) {
+    StackNodeAddLinkFrame *frame = array_back(frames);
+    if (frame->state == StackNodeAddLinkMergeChildren) {
+      StackNode *source = frame->link.node;
+      if (frame->next_child_index < source->link_count) {
+        StackLink child_link = source->links[frame->next_child_index++];
+        StackNode *merge_target = frame->merge_target;
+        array_push(frames, ((StackNodeAddLinkFrame) {
+          .state = StackNodeAddLinkEnter,
+          .self_node = merge_target,
+          .link = child_link,
+        }));
+        continue;
       }
 
-      // If the previous nodes are mergeable, merge them recursively.
-      if (
-        existing_link->node->state == link.node->state &&
-        existing_link->node->position.bytes == link.node->position.bytes &&
-        existing_link->node->error_cost == link.node->error_cost
-      ) {
-        for (int j = 0; j < link.node->link_count; j++) {
-          stack_node_add_link(existing_link->node, link.node->links[j], subtree_pool);
+      int32_t dynamic_precedence = source->dynamic_precedence;
+      if (frame->link.subtree.ptr) {
+        dynamic_precedence += ts_subtree_dynamic_precedence(frame->link.subtree);
+      }
+      if (dynamic_precedence > frame->self_node->dynamic_precedence) {
+        frame->self_node->dynamic_precedence = dynamic_precedence;
+      }
+      array_pop(frames);
+      continue;
+    }
+
+    self = frame->self_node;
+    link = frame->link;
+    if (link.node == self) {
+      array_pop(frames);
+      continue;
+    }
+
+    bool handled = false;
+    for (int i = 0; i < self->link_count; i++) {
+      StackLink *existing_link = &self->links[i];
+      if (stack__subtree_is_equivalent(existing_link->subtree, link.subtree)) {
+        // In general, we preserve ambiguities until they are removed from the stack
+        // during a pop operation where multiple paths lead to the same node. But in
+        // the special case where two links directly connect the same pair of nodes,
+        // we can safely remove the ambiguity ahead of time without changing behavior.
+        if (existing_link->node == link.node) {
+          if (
+            ts_subtree_dynamic_precedence(link.subtree) >
+            ts_subtree_dynamic_precedence(existing_link->subtree)
+          ) {
+            ts_subtree_retain(link.subtree);
+            ts_subtree_release(subtree_pool, existing_link->subtree);
+            existing_link->subtree = link.subtree;
+            self->dynamic_precedence =
+              link.node->dynamic_precedence + ts_subtree_dynamic_precedence(link.subtree);
+          }
+          array_pop(frames);
+          handled = true;
+          break;
         }
-        int32_t dynamic_precedence = link.node->dynamic_precedence;
-        if (link.subtree.ptr) {
-          dynamic_precedence += ts_subtree_dynamic_precedence(link.subtree);
+
+        // Explicit frames preserve depth-first link order without making parser depth consume the
+        // native or WebAssembly call stack.
+        if (
+          existing_link->node->state == link.node->state &&
+          existing_link->node->position.bytes == link.node->position.bytes &&
+          existing_link->node->error_cost == link.node->error_cost
+        ) {
+          frame->state = StackNodeAddLinkMergeChildren;
+          frame->merge_target = existing_link->node;
+          frame->next_child_index = 0;
+          handled = true;
+          break;
         }
-        if (dynamic_precedence > self->dynamic_precedence) {
-          self->dynamic_precedence = dynamic_precedence;
-        }
-        return;
       }
     }
+
+    if (handled) continue;
+
+    if (self->link_count == MAX_LINK_COUNT) {
+      array_pop(frames);
+      continue;
+    }
+
+    stack_node_retain(link.node);
+    unsigned node_count = link.node->node_count;
+    int dynamic_precedence = link.node->dynamic_precedence;
+    self->links[self->link_count++] = link;
+
+    if (link.subtree.ptr) {
+      ts_subtree_retain(link.subtree);
+      node_count += stack__subtree_node_count(link.subtree);
+      dynamic_precedence += ts_subtree_dynamic_precedence(link.subtree);
+    }
+
+    if (node_count > self->node_count) self->node_count = node_count;
+    if (dynamic_precedence > self->dynamic_precedence) self->dynamic_precedence = dynamic_precedence;
+    array_pop(frames);
   }
-
-  if (self->link_count == MAX_LINK_COUNT) return;
-
-  stack_node_retain(link.node);
-  unsigned node_count = link.node->node_count;
-  int dynamic_precedence = link.node->dynamic_precedence;
-  self->links[self->link_count++] = link;
-
-  if (link.subtree.ptr) {
-    ts_subtree_retain(link.subtree);
-    node_count += stack__subtree_node_count(link.subtree);
-    dynamic_precedence += ts_subtree_dynamic_precedence(link.subtree);
-  }
-
-  if (node_count > self->node_count) self->node_count = node_count;
-  if (dynamic_precedence > self->dynamic_precedence) self->dynamic_precedence = dynamic_precedence;
 }
 
 static void stack_head_delete(
@@ -424,10 +485,12 @@ Stack *ts_stack_new(SubtreePool *subtree_pool) {
   array_init(&self->heads);
   array_init(&self->slices);
   array_init(&self->iterators);
+  array_init(&self->link_merge_frames);
   array_init(&self->node_pool);
   array_reserve(&self->heads, 4);
   array_reserve(&self->slices, 4);
   array_reserve(&self->iterators, 4);
+  array_reserve(&self->link_merge_frames, 4);
   array_reserve(&self->node_pool, MAX_NODE_POOL_SIZE);
 
   self->subtree_pool = subtree_pool;
@@ -442,6 +505,8 @@ void ts_stack_delete(Stack *self) {
     array_delete(&self->slices);
   if (self->iterators.contents)
     array_delete(&self->iterators);
+  if (self->link_merge_frames.contents)
+    array_delete(&self->link_merge_frames);
   stack_node_release(self->base_node, &self->node_pool, self->subtree_pool);
   for (uint32_t i = 0; i < self->heads.size; i++) {
     stack_head_delete(array_get(&self->heads, i), &self->node_pool, self->subtree_pool);
@@ -710,7 +775,7 @@ bool ts_stack_merge(Stack *self, StackVersion version1, StackVersion version2) {
   StackHead *head1 = array_get(&self->heads, version1);
   StackHead *head2 = array_get(&self->heads, version2);
   for (uint32_t i = 0; i < head2->node->link_count; i++) {
-    stack_node_add_link(head1->node, head2->node->links[i], self->subtree_pool);
+    stack_node_add_link(self, head1->node, head2->node->links[i]);
   }
   if (head1->node->state == ERROR_STATE) {
     head1->node_count_at_last_error = head1->node->node_count;
