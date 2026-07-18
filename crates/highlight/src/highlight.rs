@@ -297,8 +297,52 @@ impl Highlighter {
         source: &'a [u8],
         encoding: Option<u32>,
         cancellation_flag: Option<&'a AtomicUsize>,
-        mut injection_callback: impl FnMut(&str) -> Option<&'a HighlightConfiguration> + 'a,
+        injection_callback: impl FnMut(&str) -> Option<&'a HighlightConfiguration> + 'a,
     ) -> Result<impl Iterator<Item = Result<HighlightEvent, Error>> + 'a, Error> {
+        self.highlight_with_included_ranges(
+            config,
+            source,
+            encoding,
+            cancellation_flag,
+            injection_callback,
+            vec![Range {
+                start_byte: 0,
+                end_byte: usize::MAX,
+                start_point: Point::new(0, 0),
+                end_point: Point::new(usize::MAX, usize::MAX),
+            }],
+        )
+    }
+
+    /// Iterates over highlighted regions while restricting the root parse to included ranges.
+    ///
+    /// Ranges use absolute byte offsets and points in `source`.
+    /// An empty range list restores the unrestricted behavior of [`Self::highlight`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the language is invalid, parsing is cancelled, or the highlighter
+    /// cannot construct the requested root layer.
+    pub fn highlight_with_included_ranges<'a>(
+        &'a mut self,
+        config: &'a HighlightConfiguration,
+        source: &'a [u8],
+        encoding: Option<u32>,
+        cancellation_flag: Option<&'a AtomicUsize>,
+        mut injection_callback: impl FnMut(&str) -> Option<&'a HighlightConfiguration> + 'a,
+        mut ranges: Vec<Range>,
+    ) -> Result<impl Iterator<Item = Result<HighlightEvent, Error>> + 'a, Error> {
+        if ranges.is_empty() {
+            ranges.push(Range {
+                start_byte: 0,
+                end_byte: usize::MAX,
+                start_point: Point::new(0, 0),
+                end_point: Point::new(usize::MAX, usize::MAX),
+            });
+        }
+        self.parser
+            .set_included_ranges(&ranges)
+            .map_err(|_| Error::Unknown)?;
         let layers = HighlightIterLayer::new(
             source,
             encoding,
@@ -308,12 +352,7 @@ impl Highlighter {
             &mut injection_callback,
             config,
             0,
-            vec![Range {
-                start_byte: 0,
-                end_byte: usize::MAX,
-                start_point: Point::new(0, 0),
-                end_point: Point::new(usize::MAX, usize::MAX),
-            }],
+            ranges,
         )?;
         assert_ne!(layers.len(), 0);
         let mut result = HighlightIter {

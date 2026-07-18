@@ -9,6 +9,7 @@ use std::{
     },
 };
 
+use tree_sitter::{Point, Range};
 use tree_sitter_highlight::{
     Error, Highlight, HighlightConfiguration, HighlightEvent, Highlighter, HtmlRenderer, c,
 };
@@ -463,6 +464,54 @@ fn test_highlighting_with_content_children_included() {
     );
 }
 
+/// Highlighting only the included ranges of a host document matches highlighting the same document
+/// with everything outside those ranges blanked, at the same absolute offsets.
+#[test]
+fn test_highlighting_with_included_ranges() {
+    let host = "<<< const a = 'x'; >>>\nnot javascript at all\n<<< let b = a + 1; >>>\n";
+
+    // Each range covers the JavaScript between a `<<<` and the following `>>>`.
+    let ranges = host
+        .match_indices("<<<")
+        .map(|(open, _)| {
+            let start_byte = open + "<<<".len();
+            let end_byte = start_byte + host[start_byte..].find(">>>").unwrap();
+            Range {
+                start_byte,
+                end_byte,
+                start_point: point_at(host, start_byte),
+                end_point: point_at(host, end_byte),
+            }
+        })
+        .collect::<Vec<_>>();
+    let masked = host
+        .char_indices()
+        .map(|(byte, char)| {
+            let included = ranges
+                .iter()
+                .any(|range| (range.start_byte..range.end_byte).contains(&byte));
+            if included || char == '\n' { char } else { ' ' }
+        })
+        .collect::<String>();
+
+    let ranged = highlighted_spans(&JS_HIGHLIGHT, host, Some(ranges)).unwrap();
+    let blanked = highlighted_spans(&JS_HIGHLIGHT, &masked, None).unwrap();
+    let unrestricted = highlighted_spans(&JS_HIGHLIGHT, &masked, Some(Vec::new())).unwrap();
+
+    // The ranged parse sees only the JavaScript, so the host text gets no highlights and every
+    // token keeps its absolute offset.
+    assert!(ranged.iter().any(|(_, text, _)| *text == "const"));
+    assert!(
+        !ranged
+            .iter()
+            .any(|(_, text, _)| text.contains("javascript"))
+    );
+    assert_eq!(ranged, blanked);
+
+    // An empty range list highlights the whole document, as `highlight` does.
+    assert_eq!(unrestricted, blanked);
+}
+
 #[test]
 fn test_highlighting_cancellation() {
     // An HTML document with a large injected JavaScript document:
@@ -701,6 +750,65 @@ fn test_decode_utf8_lossy() {
 
     let parts = LossyUtf8::new(b"hello\xc0\xc1").collect::<Vec<_>>();
     assert_eq!(parts, vec!["hello", "\u{fffd}", "\u{fffd}"]);
+}
+
+/// Highlights `src` and returns each highlighted span as its start offset, text and highlight
+/// names, omitting unhighlighted text.
+///
+/// With `ranges`, the root parse is restricted to them through
+/// [`Highlighter::highlight_with_included_ranges`].
+#[expect(
+    clippy::type_complexity,
+    reason = "return type represents structured highlight spans"
+)]
+fn highlighted_spans<'a>(
+    language_config: &'a HighlightConfiguration,
+    src: &'a str,
+    ranges: Option<Vec<Range>>,
+) -> Result<Vec<(usize, &'a str, Vec<&'static str>)>, Error> {
+    let mut highlighter = Highlighter::new();
+    let events: Box<dyn Iterator<Item = Result<HighlightEvent, Error>>> = match ranges {
+        Some(ranges) => Box::new(highlighter.highlight_with_included_ranges(
+            language_config,
+            src.as_bytes(),
+            None,
+            None,
+            &test_language_for_injection_string,
+            ranges,
+        )?),
+        None => Box::new(highlighter.highlight(
+            language_config,
+            src.as_bytes(),
+            None,
+            None,
+            &test_language_for_injection_string,
+        )?),
+    };
+    let mut highlights = Vec::new();
+    let mut spans = Vec::new();
+    for event in events {
+        match event? {
+            HighlightEvent::HighlightStart(highlight) => {
+                highlights.push(HIGHLIGHT_NAMES[highlight.0].as_str());
+            }
+            HighlightEvent::HighlightEnd => {
+                highlights.pop();
+            }
+            HighlightEvent::Source { start, end } => {
+                if !highlights.is_empty() {
+                    spans.push((start, &src[start..end], highlights.clone()));
+                }
+            }
+        }
+    }
+    Ok(spans)
+}
+
+fn point_at(src: &str, byte: usize) -> Point {
+    let before = &src[..byte];
+    let row = before.matches('\n').count();
+    let column = before.len() - before.rfind('\n').map_or(0, |newline| newline + 1);
+    Point::new(row, column)
 }
 
 fn c_string(s: &str) -> CString {
