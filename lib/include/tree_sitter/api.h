@@ -995,6 +995,39 @@ const TSQueryPredicateStep *ts_query_predicates_for_pattern(
  */
 bool ts_query_is_pattern_rooted(const TSQuery *self, uint32_t pattern_index);
 
+/**
+ * Get the depth of each capture in the given pattern below the pattern's root.
+ *
+ * A pattern is rooted at its top-level node, so a capture on that node has
+ * depth 0 and a capture on one of its children has depth 1.
+ * A pattern whose top level is a sequence of sibling nodes, or a repeated
+ * node, is rooted at their parent instead, which adds 1 to every depth.
+ *
+ * For each capture in the query, this writes the capture's depth to
+ * `depths[capture_id]`, or `UINT32_MAX` if the pattern does not use the
+ * capture.
+ * A capture that appears at several depths, such as in different
+ * alternatives, gets the largest of them.
+ * The `depths` array must have room for [`ts_query_capture_count`] entries.
+ *
+ * Returns `true` if the pattern is rooted at the parent of its top-level nodes.
+ */
+bool ts_query_pattern_capture_depths(
+  const TSQuery *self,
+  uint32_t pattern_index,
+  uint32_t *depths
+);
+
+/**
+ * Get the largest difference between the depths at which one capture appears
+ * in the given pattern, such as in different alternatives.
+ *
+ * The depths that [`ts_query_pattern_capture_depths`] reports place a match's
+ * root as high as it can be.
+ * The match's actual root can be up to this many levels below that.
+ */
+uint32_t ts_query_pattern_depth_spread(const TSQuery *self, uint32_t pattern_index);
+
 /*
  * Check if the given pattern in the query is 'non local'.
  *

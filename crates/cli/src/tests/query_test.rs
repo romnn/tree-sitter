@@ -1,4 +1,4 @@
-use std::{cell::Cell, env, fmt::Write, ops::ControlFlow, sync::LazyLock};
+use std::{cell::Cell, env, fmt::Write, fs, ops::ControlFlow, sync::LazyLock};
 
 use indoc::indoc;
 use rand::{SeedableRng, prelude::StdRng};
@@ -13,7 +13,7 @@ use unindent::Unindent;
 
 use super::helpers::{
     allocations,
-    fixtures::{get_language, get_test_language},
+    fixtures::{get_language, get_language_queries_path, get_test_language},
     query_helpers::{Match, Pattern, assert_query_matches},
 };
 use crate::tests::{
@@ -5344,6 +5344,159 @@ fn test_query_is_pattern_non_local() {
             );
         }
     });
+}
+
+/// Each capture's depth counts the nodes between the pattern's root and the captured node, and a
+/// capture that appears in several alternatives reports its deepest occurrence.
+#[test]
+fn test_query_pattern_capture_depths_follow_node_nesting() {
+    let source = r#"
+        ((macro_invocation
+           macro: [
+             (scoped_identifier name: (_) @name)
+             (identifier) @name
+           ]
+           (token_tree) @content)
+         (#eq? @name "html"))
+
+        (function_item
+          name: (identifier) @content
+          body: (block . (expression_statement (macro_invocation (identifier) @inner))))
+
+        [(line_comment) (block_comment)] @content
+        (_ (identifier) @content)
+    "#;
+
+    allocations::record(|| {
+        assert_eq!(
+            capture_depths(&get_language("rust"), source),
+            [
+                vec!["name:2", "content:1"],
+                vec!["content:1", "inner:4"],
+                vec!["content:0"],
+                vec!["content:1"],
+            ]
+        );
+    });
+}
+
+/// A pattern whose top level is a sequence of siblings or a repeated node is rooted at the parent
+/// of those nodes, one level above them.
+#[test]
+fn test_query_pattern_capture_depths_root_sibling_sequences_at_the_parent() {
+    let source = r#"
+        ((line_comment) @comment . (function_item name: (identifier) @name))
+        ((line_comment)+ @comments)
+        ("fn" @keyword)
+    "#;
+
+    allocations::record(|| {
+        let language = get_language("rust");
+        assert_eq!(
+            capture_depths(&language, source),
+            [
+                vec!["comment:1", "name:2"],
+                vec!["comments:1"],
+                vec!["keyword:0"],
+            ]
+        );
+
+        // Only the sibling sequence and the repetition are rooted at a parent.
+        let query = Query::new(&language, source).unwrap();
+        let rooted_at_parent = (0..query.pattern_count())
+            .map(|pattern| query.pattern_capture_depths(pattern).rooted_at_parent)
+            .collect::<Vec<_>>();
+        assert_eq!(rooted_at_parent, [true, true, false]);
+    });
+}
+
+/// The depth spread is the largest distance between the depths of one capture in a pattern, so a
+/// match can be rooted up to that many levels below where its deepest capture places it.
+#[test]
+fn test_query_pattern_depth_spread() {
+    let source = r"
+        (macro_invocation
+          macro: [
+            (scoped_identifier name: (_) @name)
+            (identifier) @name
+          ])
+        [
+          (identifier) @name
+          (call_expression function: (field_expression field: (field_identifier) @name))
+        ]
+        (function_item name: (identifier) @name body: (block) @body)
+    ";
+
+    allocations::record(|| {
+        let query = Query::new(&get_language("rust"), source).unwrap();
+        let spreads = (0..query.pattern_count())
+            .map(|pattern| query.pattern_depth_spread(pattern))
+            .collect::<Vec<_>>();
+        assert_eq!(spreads, [1, 2, 0]);
+    });
+}
+
+/// Whether a pattern is rooted at the parent of its top-level nodes agrees with
+/// `is_pattern_rooted` for every pattern in the fixture grammars' queries.
+#[test]
+fn test_query_pattern_capture_depths_agree_with_rootedness() {
+    let mut checked = 0;
+    for language_name in [
+        "bash",
+        "c",
+        "cpp",
+        "embedded-template",
+        "go",
+        "html",
+        "java",
+        "javascript",
+        "jsdoc",
+        "json",
+        "python",
+        "ruby",
+        "rust",
+    ] {
+        let language = get_language(language_name);
+        let queries_path = get_language_queries_path(language_name);
+        for entry in fs::read_dir(&queries_path).unwrap() {
+            let path = entry.unwrap().path();
+            let source = fs::read_to_string(&path).unwrap();
+            let query = Query::new(&language, &source).unwrap();
+            for pattern in 0..query.pattern_count() {
+                let text = &source[query.start_byte_for_pattern(pattern)..];
+                // A wildcard root with a named child is matched from that child, so
+                // `is_pattern_rooted` judges the child instead of the pattern's top level.
+                if text.starts_with("(_") && text[2..].starts_with(char::is_whitespace) {
+                    continue;
+                }
+                assert_eq!(
+                    query.pattern_capture_depths(pattern).rooted_at_parent,
+                    !query.is_pattern_rooted(pattern),
+                    "{} pattern {pattern}: {}",
+                    path.display(),
+                    text.lines().next().unwrap_or_default(),
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 100, "only {checked} patterns checked");
+}
+
+/// Formats each pattern's used captures as `name:depth`, in capture order.
+fn capture_depths(language: &Language, source: &str) -> Vec<Vec<String>> {
+    let query = Query::new(language, source).unwrap();
+    (0..query.pattern_count())
+        .map(|pattern| {
+            query
+                .pattern_capture_depths(pattern)
+                .depths
+                .iter()
+                .zip(query.capture_names())
+                .filter_map(|(depth, name)| depth.map(|depth| format!("{name}:{depth}")))
+                .collect()
+        })
+        .collect()
 }
 
 #[test]

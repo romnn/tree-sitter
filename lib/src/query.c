@@ -3340,6 +3340,77 @@ bool ts_query_is_pattern_rooted(
   return true;
 }
 
+bool ts_query_pattern_capture_depths(
+  const TSQuery *self,
+  uint32_t pattern_index,
+  uint32_t *depths
+) {
+  const QueryPattern *pattern = array_get(&self->patterns, pattern_index);
+  uint32_t start = pattern->steps.offset;
+  uint32_t end = start + pattern->steps.length;
+
+  // Dead ends separate the alternatives at the root, so only siblings within one alternative
+  // form a sequence.
+  // A pass-through step at the root repeats a top-level node.
+  bool needs_parent = false;
+  bool seen_root = false;
+  for (uint32_t i = start; i < end; i++) {
+    const QueryStep *step = array_get(&self->steps, i);
+    if (step->depth != 0) continue;
+    if (step->is_dead_end) {
+      seen_root = false;
+    } else if (step->is_pass_through) {
+      needs_parent = true;
+    } else {
+      needs_parent |= seen_root;
+      seen_root = true;
+    }
+  }
+
+  uint32_t capture_count = ts_query_capture_count(self);
+  for (uint32_t i = 0; i < capture_count; i++) {
+    depths[i] = UINT32_MAX;
+  }
+  for (uint32_t i = start; i < end; i++) {
+    const QueryStep *step = array_get(&self->steps, i);
+    if (step->depth == PATTERN_DONE_MARKER) continue;
+    uint32_t depth = step->depth + needs_parent;
+    for (unsigned j = 0; j < MAX_STEP_CAPTURE_COUNT && step->capture_ids[j] != NONE; j++) {
+      uint32_t *deepest = &depths[step->capture_ids[j]];
+      if (*deepest == UINT32_MAX || *deepest < depth) *deepest = depth;
+    }
+  }
+  return needs_parent;
+}
+
+uint32_t ts_query_pattern_depth_spread(
+  const TSQuery *self,
+  uint32_t pattern_index
+) {
+  const QueryPattern *pattern = array_get(&self->patterns, pattern_index);
+  uint32_t start = pattern->steps.offset;
+  uint32_t end = start + pattern->steps.length;
+  uint32_t capture_count = ts_query_capture_count(self);
+  uint32_t spread = 0;
+  for (uint32_t capture_id = 0; capture_id < capture_count; capture_id++) {
+    uint32_t min_depth = UINT32_MAX;
+    uint32_t max_depth = 0;
+    for (uint32_t i = start; i < end; i++) {
+      const QueryStep *step = array_get(&self->steps, i);
+      if (step->depth == PATTERN_DONE_MARKER) continue;
+      for (unsigned j = 0; j < MAX_STEP_CAPTURE_COUNT && step->capture_ids[j] != NONE; j++) {
+        if (step->capture_ids[j] != capture_id) continue;
+        if (step->depth < min_depth) min_depth = step->depth;
+        if (step->depth > max_depth) max_depth = step->depth;
+      }
+    }
+    if (min_depth != UINT32_MAX && max_depth - min_depth > spread) {
+      spread = max_depth - min_depth;
+    }
+  }
+  return spread;
+}
+
 bool ts_query_is_pattern_non_local(
   const TSQuery *self,
   uint32_t pattern_index

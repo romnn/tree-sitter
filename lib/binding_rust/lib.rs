@@ -377,6 +377,18 @@ pub struct QueryCursor {
     ptr: NonNull<ffi::TSQueryCursor>,
 }
 
+/// The depths of a pattern's captures below the pattern's root, from
+/// [`Query::pattern_capture_depths`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PatternCaptureDepths {
+    /// Each capture's depth, indexed like [`Query::capture_names`], or `None` for a capture the
+    /// pattern does not use.
+    pub depths: Box<[Option<u32>]>,
+    /// Whether the pattern is rooted at the parent of its top-level nodes, because they are a
+    /// sequence of siblings or a repeated node.
+    pub rooted_at_parent: bool,
+}
+
 /// A key-value pair associated with a particular pattern in a [`Query`].
 #[derive(Debug, PartialEq, Eq)]
 pub struct QueryProperty {
@@ -3034,6 +3046,57 @@ impl Query {
     #[must_use]
     pub fn is_pattern_rooted(&self, index: usize) -> bool {
         unsafe { ffi::ts_query_is_pattern_rooted(self.ptr.as_ptr(), index as u32) }
+    }
+
+    /// Get the depth of each capture in a pattern below the pattern's root.
+    ///
+    /// A pattern is rooted at its top-level node, so a capture on that node has depth 0 and a
+    /// capture on one of its children has depth 1.
+    /// A pattern whose top level is a sequence of sibling nodes, or a repeated node, is rooted
+    /// at their parent instead, which adds 1 to every depth.
+    /// A capture that appears at several depths, such as in different alternatives, gets the
+    /// largest of them.
+    #[doc(alias = "ts_query_pattern_capture_depths")]
+    #[must_use]
+    pub fn pattern_capture_depths(&self, pattern_index: usize) -> PatternCaptureDepths {
+        assert!(
+            pattern_index < self.text_predicates.len(),
+            "Pattern index is {pattern_index} but the pattern count is {}",
+            self.text_predicates.len(),
+        );
+        let mut depths = iter::repeat_n(u32::MAX, self.capture_names.len()).collect::<Vec<_>>();
+        // SAFETY: `depths` has one entry for each of the query's captures.
+        let rooted_at_parent = unsafe {
+            ffi::ts_query_pattern_capture_depths(
+                self.ptr.as_ptr(),
+                pattern_index as u32,
+                depths.as_mut_ptr(),
+            )
+        };
+        PatternCaptureDepths {
+            depths: depths
+                .into_iter()
+                .map(|depth| (depth != u32::MAX).then_some(depth))
+                .collect(),
+            rooted_at_parent,
+        }
+    }
+
+    /// Get the largest difference between the depths at which one capture appears in a pattern,
+    /// such as in different alternatives.
+    ///
+    /// The depths that [`Self::pattern_capture_depths`] reports place a match's root as high as
+    /// it can be.
+    /// The match's actual root can be up to this many levels below that.
+    #[doc(alias = "ts_query_pattern_depth_spread")]
+    #[must_use]
+    pub fn pattern_depth_spread(&self, pattern_index: usize) -> u32 {
+        assert!(
+            pattern_index < self.text_predicates.len(),
+            "Pattern index is {pattern_index} but the pattern count is {}",
+            self.text_predicates.len(),
+        );
+        unsafe { ffi::ts_query_pattern_depth_spread(self.ptr.as_ptr(), pattern_index as u32) }
     }
 
     /// Check if a given pattern within a query has a single root node.

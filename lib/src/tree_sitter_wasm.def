@@ -116,7 +116,9 @@ EXPORTS
     ts_query_is_pattern_non_local
     ts_query_is_pattern_rooted
     ts_query_new
+    ts_query_pattern_capture_depths
     ts_query_pattern_count
+    ts_query_pattern_depth_spread
     ts_query_predicates_for_pattern
     ts_query_start_byte_for_pattern
     ts_query_string_count

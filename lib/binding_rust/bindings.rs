@@ -630,6 +630,18 @@ unsafe extern "C" {
     pub fn ts_query_is_pattern_rooted(self_: *const TSQuery, pattern_index: u32) -> bool;
 }
 unsafe extern "C" {
+    #[doc = " Get the depth of each capture in the given pattern below the pattern's root.\n\n A pattern is rooted at its top-level node, so a capture on that node has\n depth 0 and a capture on one of its children has depth 1.\n A pattern whose top level is a sequence of sibling nodes, or a repeated\n node, is rooted at their parent instead, which adds 1 to every depth.\n\n For each capture in the query, this writes the capture's depth to\n `depths[capture_id]`, or `UINT32_MAX` if the pattern does not use the\n capture.\n A capture that appears at several depths, such as in different\n alternatives, gets the largest of them.\n The `depths` array must have room for [`ts_query_capture_count`] entries.\n\n Returns `true` if the pattern is rooted at the parent of its top-level nodes."]
+    pub fn ts_query_pattern_capture_depths(
+        self_: *const TSQuery,
+        pattern_index: u32,
+        depths: *mut u32,
+    ) -> bool;
+}
+unsafe extern "C" {
+    #[doc = " Get the largest difference between the depths at which one capture appears\n in the given pattern, such as in different alternatives.\n\n The depths that [`ts_query_pattern_capture_depths`] reports place a match's\n root as high as it can be.\n The match's actual root can be up to this many levels below that."]
+    pub fn ts_query_pattern_depth_spread(self_: *const TSQuery, pattern_index: u32) -> u32;
+}
+unsafe extern "C" {
     pub fn ts_query_is_pattern_non_local(self_: *const TSQuery, pattern_index: u32) -> bool;
 }
 unsafe extern "C" {
